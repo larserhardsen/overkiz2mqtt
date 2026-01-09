@@ -22,6 +22,7 @@ from pyoverkiz.client import OverkizClient
 from pyoverkiz.const import SUPPORTED_SERVERS
 from pyoverkiz.exceptions import (
     BadCredentialsException,
+    MaintenanceException,
     NotAuthenticatedException,
     OverkizException,
     TooManyRequestsException,
@@ -30,6 +31,7 @@ from pyoverkiz.models import Command, EventState, State
 
 catch_exceptions = (
     TooManyRequestsException,
+    MaintenanceException,
     NotAuthenticatedException,
     ServerDisconnectedError,
     ClientOSError,
@@ -130,7 +132,7 @@ async def execute_overkiz_command(client, url, command, params=[]):
         logging.error(
             f"{type(e).__name__} while executing {command}{parameters}: {str(e)}"
         )
-        if isinstance(e, TooManyRequestsException):
+        if isinstance(e, TooManyRequestsException | MaintenanceException):
             logging.error(f"Exiting")
             sys.exit(0)
     return
