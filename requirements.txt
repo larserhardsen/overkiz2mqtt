@@ -1,0 +1,6 @@
+# Dependencies used directly by overkiz2mqtt.py
+aiohttp>=3.9,<4
+jsons>=1.6,<2
+paho-mqtt>=1.6,<3
+pyoverkiz>=1.20,<2
+requests>=2.31,<3

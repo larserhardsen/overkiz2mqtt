@@ -41,7 +41,59 @@ catch_exceptions = (
     asyncio.TimeoutError,
 )
 
-import config
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or value == "":
+        logging.error(f"Missing required environment variable: {name}")
+        sys.exit(1)
+    return value
+
+
+def _optional_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logging.error(f"Environment variable {name} must be an integer, got: {value}")
+        sys.exit(1)
+
+
+def _optional_json_list_env(name: str):
+    value = os.getenv(name)
+    if value is None or value == "":
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        logging.error(
+            f"Environment variable {name} must be valid JSON list, got: {value}"
+        )
+        sys.exit(1)
+    if not isinstance(parsed, list):
+        logging.error(
+            f"Environment variable {name} must be a JSON list, got: {type(parsed).__name__}"
+        )
+        sys.exit(1)
+    return parsed
+
+
+# Required settings
+OVERKIZ_USERNAME = _required_env("OVERKIZ_USERNAME")
+OVERKIZ_PASSWORD = _required_env("OVERKIZ_PASSWORD")
+OVERKIZ_SERVER = _required_env("OVERKIZ_SERVER")
+MQTT_BROKER = _required_env("MQTT_BROKER")
+MQTT_TOPIC = _required_env("MQTT_TOPIC")
+
+# Optional settings
+MQTT_USERNAME = os.getenv("MQTT_USERNAME")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
+DEVICE_NAME = os.getenv("DEVICE_NAME")
+DEVICE_COMMAND = os.getenv("DEVICE_COMMAND")
+DEVICE_COMMAND_PARAMS = _optional_json_list_env("DEVICE_COMMAND_PARAMS")
+SLEEP_SECONDS = _optional_int_env("SLEEP_SECONDS", 60)
 
 
 def serialize_state(state, **kwargs):
@@ -52,9 +104,22 @@ def serialize_state(state, **kwargs):
 
 
 def publish_states(device_name, states):
+    if device_name not in (
+        "io:WindowOpenerVeluxIOComponent",
+        "io:HorizontalAwningIOComponent",
+    ):
+        return
+
     message = jsons.dumps({s.name: s.value for s in states})
-    logging.debug(f"Publishing {config.mqtt_topic}/{device_name}/states -> {message}")
-    mqtt_client.publish(f"{config.mqtt_topic}/{device_name}/states", message)
+    logging.debug(f"Publishing {MQTT_TOPIC}/{device_name}/states -> {message}")
+
+    message_dict = json.loads(message)
+#    print("Message:", message_dict, flush=True)
+#    print("Available keys:", list(message_dict.keys()), flush=True)
+    device_display_name = message_dict.get("core:NameState", device_name)
+    #device_display_name = (json.loads(message))["core:NameState"]
+
+    mqtt_client.publish(f"{MQTT_TOPIC}/{device_name}/states/{device_display_name}", message)
 
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -96,12 +161,12 @@ def mqtt_init():
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     else:
         client = mqtt.Client()
-    if hasattr(config, "mqtt_username") and hasattr(config, "mqtt_password"):
-        client.username_pw_set(config.mqtt_username, config.mqtt_password)
+    if MQTT_USERNAME and MQTT_PASSWORD:
+        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect(config.mqtt_broker)
-    client.subscribe(config.mqtt_topic + "/commands")
+    client.connect(MQTT_BROKER)
+    client.subscribe(MQTT_TOPIC + "/commands")
     client.loop_start()
     return client
 
@@ -151,9 +216,9 @@ async def main() -> None:
         trace_configs = []
 
     async with OverkizClient(
-        config.username,
-        config.password,
-        server=SUPPORTED_SERVERS[config.server],
+        OVERKIZ_USERNAME,
+        OVERKIZ_PASSWORD,
+        server=SUPPORTED_SERVERS[OVERKIZ_SERVER],
         session=aiohttp.ClientSession(trace_configs=trace_configs),
     ) as client:
         try:
@@ -177,10 +242,10 @@ async def main() -> None:
                     for device in devices:
                         message = jsons.dumps(device)
                         logging.debug(
-                            f"Publishing {config.mqtt_topic}/{device.controllable_name} -> {message}"
+                            f"Publishing {MQTT_TOPIC}/{device.controllable_name} -> {message}"
                         )
                         mqtt_client.publish(
-                            f"{config.mqtt_topic}/{device.controllable_name}",
+                            f"{MQTT_TOPIC}/{device.controllable_name}",
                             message,
                             retain=True,
                         )
@@ -193,15 +258,15 @@ async def main() -> None:
                 device_urls[device.controllable_name] = device.device_url
                 # execute command every sleep cycle
                 if (
-                    hasattr(config, "device_name")
-                    and hasattr(config, "device_command")
-                    and device.controllable_name == config.device_name
+                    DEVICE_NAME
+                    and DEVICE_COMMAND
+                    and device.controllable_name == DEVICE_NAME
                 ):
                     await execute_overkiz_command(
                         client,
                         device.device_url,
-                        config.device_command,
-                        getattr(config, "device_command_params", []),
+                        DEVICE_COMMAND,
+                        DEVICE_COMMAND_PARAMS,
                     )
 
                 # get current states
@@ -222,7 +287,7 @@ async def main() -> None:
                     sys.exit(1)
 
             #  while waiting to start next loop iteration
-            for i in range(0, getattr(config, "sleep", 60), 2):
+            for i in range(0, SLEEP_SECONDS, 2):
                 # execute command received from mqtt if device name matches
                 if mqtt_command and mqtt_command.get("device", "") in device_urls:
                     await execute_overkiz_command(
@@ -242,9 +307,9 @@ async def main() -> None:
                 for event in events:
                     event_string = jsons.dumps(event, strip_nulls=True)
                     logging.debug(
-                        f"Publishing {config.mqtt_topic}/events -> {event_string}"
+                        f"Publishing {MQTT_TOPIC}/events -> {event_string}"
                     )
-                    mqtt_client.publish(f"{config.mqtt_topic}/events", event_string)
+                    mqtt_client.publish(f"{MQTT_TOPIC}/events", event_string)
                 await asyncio.sleep(2)
 
 
@@ -278,7 +343,7 @@ if __name__ == "__main__":
         level = logging.INFO
     logging.basicConfig(level=level)
 
-    if config.server == "atlantic_cozytouch" and cozytouch_maintenance():
+    if OVERKIZ_SERVER == "atlantic_cozytouch" and cozytouch_maintenance():
         logging.warning("Cozytouch API is in maintenance: exiting")
         sys.exit(0)
 
